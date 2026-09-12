@@ -92,4 +92,17 @@ describe('invokeServerFunction', () => {
       'Server function getServer is not available',
     )
   })
+
+  it('rejects array outcomes as malformed', async () => {
+    const executeImplementation = vi.fn()
+    const serverFunction = {
+      __executeServer: vi.fn(async () => []),
+      __executeImplementation: executeImplementation,
+    }
+
+    await expect(
+      invokeServerFunction(serverFunction, 'getServer', {}),
+    ).rejects.toThrow('Server function getServer returned a malformed result')
+    expect(executeImplementation).not.toHaveBeenCalled()
+  })
 })

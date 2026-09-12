@@ -29,7 +29,7 @@ export async function invokeServerFunction<T>(
   }
 
   const outcome = await executeServer(options)
-  if (!outcome || typeof outcome !== 'object') {
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) {
     throw new Error(`Server function ${name} returned a malformed result`)
   }
   if (outcome.error) throw outcome.error
