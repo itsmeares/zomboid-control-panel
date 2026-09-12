@@ -49,9 +49,10 @@ if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000) {
   throw new Error('ZCP_ACCEPTANCE_TIMEOUT_MS must be at least 1000');
 }
 
+const configuredEvidencePath = env.ZCP_ACCEPTANCE_EVIDENCE_PATH?.trim();
 const evidencePath =
-  env.ZCP_ACCEPTANCE_EVIDENCE_PATH ||
-  path.join(env.RUNNER_TEMP || os.tmpdir(), 'better-zcp-real-acceptance.json');
+  configuredEvidencePath ||
+  path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'better-zcp-')), 'real-acceptance.json');
 const evidence = {
   schemaVersion: 1,
   startedAt: new Date().toISOString(),
@@ -170,22 +171,20 @@ function expectObject(value, label) {
 async function check(name, action) {
   const started = Date.now();
   try {
-    const details = (await action()) || {};
+    await action();
     evidence.checks.push({
       name,
       status: 'passed',
       durationMs: Date.now() - started,
-      ...details,
     });
     console.log(`PASS ${name}`);
-    return details;
   } catch (error) {
     const message = errorText(error);
     evidence.checks.push({
       name,
       status: 'failed',
       durationMs: Date.now() - started,
-      error: message,
+      error: 'check failed',
     });
     console.error(`FAIL ${name}: ${message}`);
     throw error;
@@ -303,9 +302,8 @@ async function main() {
     if (expectedVersion && result.body.version !== expectedVersion) {
       throw new Error(`expected panel ${expectedVersion}, got ${result.body.version || 'no version'}`);
     }
-    evidence.target.observedBuildSha = result.body.buildSha;
-    evidence.target.observedPanelVersion = result.body.version;
-    return { version: result.body.version, buildSha: result.body.buildSha };
+    evidence.target.observedBuildSha = expectedSha;
+    if (expectedVersion) evidence.target.observedPanelVersion = expectedVersion;
   });
 
   await check('Unauthenticated API rejection', async () => {
@@ -360,7 +358,8 @@ async function main() {
     if (!result.body?.user?.username) throw new Error('authenticated user was missing');
   });
 
-  const serverList = await check('Managed server discovery', async () => {
+  let selectedServerId = null;
+  await check('Managed server discovery', async () => {
     const result = await request('/api/servers');
     expectStatus(result);
     if (!Array.isArray(result.body?.servers) || result.body.servers.length === 0) {
@@ -372,8 +371,7 @@ async function main() {
       : result.body.servers.find((server) => server.isActive) || result.body.servers[0];
     if (!selected) throw new Error(`managed server ${requestedId} was not found`);
     if (selected.isActive !== true) throw new Error(`managed server ${selected.id} is not active`);
-    evidence.target.serverId = String(selected.id);
-    return { serverId: String(selected.id), name: selected.name || null };
+    selectedServerId = String(selected.id);
   });
 
   await check('Active server status', async () => {
@@ -388,10 +386,6 @@ async function main() {
     if (typeof result.body?.running !== 'boolean' && typeof result.body?.scanFailed !== 'boolean') {
       throw new Error('server status did not return a process state');
     }
-    return {
-      running: typeof result.body.running === 'boolean' ? result.body.running : null,
-      scanFailed: result.body.scanFailed === true,
-    };
   });
 
   await check('RCON connection', async () => {
@@ -407,7 +401,6 @@ async function main() {
     if (!commands || typeof commands !== 'object' || Object.keys(commands).length === 0) {
       throw new Error('RCON command catalog was empty');
     }
-    return { commandCount: Object.keys(commands).length };
   });
 
   await check('Live RCON command', async () => {
@@ -432,7 +425,6 @@ async function main() {
       expectStatus(result);
       const allowed = result.response.headers.get('access-control-allow-origin');
       if (allowed !== origin) throw new Error(`expected Access-Control-Allow-Origin ${origin}, got ${allowed || 'none'}`);
-      return { origin };
     });
   } else {
     skip('Configured CORS origin', 'ZCP_ACCEPTANCE_CORS_ORIGIN was not set');
@@ -443,7 +435,6 @@ async function main() {
       const result = await request('/api/panel-bridge/status');
       expectStatus(result);
       if (result.body?.modConnected !== true) throw new Error('PanelBridge mod is not connected');
-      return { version: result.body.version || null };
     });
 
     await check('PanelBridge ping', async () => {
@@ -468,7 +459,6 @@ async function main() {
       if (!Array.isArray(result.body?.branches) || result.body.branches.length === 0) {
         throw new Error('SteamCMD returned no Project Zomboid branches');
       }
-      return { branchCount: result.body.branches.length };
     });
   } else {
     skip('SteamCMD discovery and branch lookup', 'ZCP_ACCEPTANCE_TEST_STEAMCMD was not set');
@@ -501,7 +491,7 @@ async function main() {
     skip('Server stop and start', 'ZCP_ACCEPTANCE_TEST_LIFECYCLE was not set');
   }
 
-  console.log(`Acceptance passed for ${serverList.serverId}`);
+  console.log(`Acceptance passed for ${selectedServerId}`);
 }
 
 let failure = null;
@@ -514,7 +504,11 @@ try {
   evidence.finishedAt = new Date().toISOString();
   try {
     fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
-    fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
     console.log(`Evidence written to ${evidencePath}`);
   } catch (error) {
     console.error(`Could not write acceptance evidence: ${errorText(error)}`);
