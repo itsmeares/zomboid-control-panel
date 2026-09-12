@@ -4,9 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Commit, branch, or tag whose deployed artifact is being checked
+        description: Protected release tag, main, or full commit SHA whose deployed artifact is being checked
         required: true
         default: main
+  workflow_call:
+    inputs:
+      ref:
+        description: Protected release tag or full commit SHA whose deployed artifact is being checked
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -35,25 +41,77 @@ jobs:
             deployment: docker-all-in-one
     runs-on: ${{ matrix.runner }}
     environment: ${{ matrix.environment }}
+    concurrency:
+      group: real-acceptance-${{ matrix.environment }}
+      cancel-in-progress: false
 
     steps:
-      - name: Checkout tested revision
+      - name: Checkout trusted harness revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve tested revision without executing it
+        id: target
+        shell: bash
+        env:
+          TARGET_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          case "$TARGET_REF" in
+            main) remote_ref='refs/heads/main' ;;
+            v2.*) remote_ref="refs/tags/$TARGET_REF" ;;
+            *)
+              if [[ ! "$TARGET_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                echo 'ref must be main, a v2 tag, or a full commit SHA' >&2
+                exit 1
+              fi
+              remote_ref="$TARGET_REF"
+              ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$remote_ref"
+          tested_sha=$(git rev-parse FETCH_HEAD^{commit})
+          source_dir="$RUNNER_TEMP/better-zcp-tested-source-$GITHUB_RUN_ID"
+          git worktree add --detach "$source_dir" "$tested_sha"
+          {
+            echo "sha=$tested_sha"
+            echo "source_dir=$source_dir"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
 
+      - uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b
+        with:
+          version: 11.24.0
+
+      - name: Install trusted acceptance dependencies
+        run: pnpm install --frozen-lockfile --filter better-zcp
+
+      - name: Install Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/better-zcp-playwright
+        run: pnpm exec playwright install chromium
+
       - name: Reject stale engine signature manifest
-        run: node scripts/check-engine-signatures.mjs --require-fresh-manifest
+        env:
+          EXPECTED_PZ_BUILD_ID: ${{ vars.ZCP_ACCEPTANCE_PZ_BUILD_ID }}
+        run: >-
+          node scripts/check-engine-signatures.mjs
+          --lua "${{ steps.target.outputs.source_dir }}/integrations/panelbridge/PanelBridge/media/lua/server/PanelBridge.lua"
+          --manifest "${{ steps.target.outputs.source_dir }}/scripts/engine-signatures.manifest.json"
+          --baseline "${{ steps.target.outputs.source_dir }}/scripts/engine-signatures.baseline.json"
+          --expected-pz-build-id "$EXPECTED_PZ_BUILD_ID"
+          --require-fresh-manifest
 
       - name: Run static bridge and RCON checks
         run: |
-          node scripts/audit-bridge-actions.mjs .
-          node scripts/audit-bridge-routes.mjs .
-          node scripts/audit-rcon-commands.mjs .
+          node scripts/audit-bridge-actions.mjs "${{ steps.target.outputs.source_dir }}"
+          node scripts/audit-bridge-routes.mjs "${{ steps.target.outputs.source_dir }}"
+          node scripts/audit-rcon-commands.mjs "${{ steps.target.outputs.source_dir }}"
 
       - name: Run real acceptance matrix row
         env:
@@ -64,18 +122,27 @@ jobs:
           ZCP_ACCEPTANCE_PLATFORM: ${{ matrix.platform }}
           ZCP_ACCEPTANCE_DEPLOYMENT: ${{ matrix.deployment }}
           ZCP_ACCEPTANCE_OWNER: ${{ vars.ZCP_ACCEPTANCE_OWNER }}
-          ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA: ${{ vars.ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA }}
+          ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA: ${{ steps.target.outputs.sha }}
           ZCP_ACCEPTANCE_EXPECTED_PANEL_VERSION: ${{ vars.ZCP_ACCEPTANCE_EXPECTED_PANEL_VERSION }}
           ZCP_ACCEPTANCE_PZ_BUILD_ID: ${{ vars.ZCP_ACCEPTANCE_PZ_BUILD_ID }}
           ZCP_ACCEPTANCE_PZ_INSTALL_PATH: ${{ vars.ZCP_ACCEPTANCE_PZ_INSTALL_PATH }}
           ZCP_ACCEPTANCE_SERVER_ID: ${{ vars.ZCP_ACCEPTANCE_SERVER_ID }}
           ZCP_ACCEPTANCE_REQUIRE_BRIDGE: ${{ vars.ZCP_ACCEPTANCE_REQUIRE_BRIDGE }}
+          ZCP_ACCEPTANCE_CORS_MODE: ${{ vars.ZCP_ACCEPTANCE_CORS_MODE }}
           ZCP_ACCEPTANCE_CORS_ORIGIN: ${{ vars.ZCP_ACCEPTANCE_CORS_ORIGIN }}
           ZCP_ACCEPTANCE_TEST_STEAMCMD: ${{ vars.ZCP_ACCEPTANCE_TEST_STEAMCMD }}
           ZCP_ACCEPTANCE_TEST_LIFECYCLE: ${{ vars.ZCP_ACCEPTANCE_TEST_LIFECYCLE }}
           ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE: ${{ vars.ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE }}
           ZCP_ACCEPTANCE_EVIDENCE_PATH: ${{ runner.temp }}/better-zcp-real-acceptance.json
         run: node scripts/acceptance-release.mjs
+
+      - name: Run browser login and reload acceptance
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/better-zcp-playwright
+          ZCP_ACCEPTANCE_URL: ${{ vars.ZCP_ACCEPTANCE_URL }}
+          ZCP_ACCEPTANCE_USERNAME: ${{ secrets.ZCP_ACCEPTANCE_USERNAME }}
+          ZCP_ACCEPTANCE_PASSWORD: ${{ secrets.ZCP_ACCEPTANCE_PASSWORD }}
+        run: node scripts/acceptance-browser.mjs
 
       - name: Upload redacted evidence
         if: always()
@@ -85,3 +152,10 @@ jobs:
           path: ${{ runner.temp }}/better-zcp-real-acceptance.json
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Remove tested source worktree
+        if: always()
+        shell: bash
+        env:
+          TESTED_SOURCE_DIR: ${{ steps.target.outputs.source_dir }}
+        run: git worktree remove --force "$TESTED_SOURCE_DIR" || true

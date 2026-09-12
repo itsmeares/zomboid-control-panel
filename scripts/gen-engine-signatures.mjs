@@ -20,6 +20,16 @@ const MANIFEST_PATH = path.join(__dirname, 'engine-signatures.manifest.json');
 const MIN_SEED_FINGERPRINT_COVERAGE = 0.7;
 const MAX_SUPERCLASS_DEPTH = 25;
 
+function inferJarBuildId(jarPath) {
+  const manifestPath = path.resolve(path.dirname(jarPath), '..', 'steamapps', 'appmanifest_380870.acf');
+  try {
+    const manifest = fs.readFileSync(manifestPath, 'utf8');
+    return manifest.match(/"buildid"\s+"([^"]+)"/)?.[1] || null;
+  } catch {
+    return process.env.PZ_BUILD_ID?.trim() || null;
+  }
+}
+
 function parseArgs(argv) {
   const args = { javap: null, jar: null };
   for (let i = 0; i < argv.length; i++) {
@@ -395,6 +405,8 @@ const manifest = {
   generatorNote: 'Run `node scripts/gen-engine-signatures.mjs` to regenerate after PanelBridge.lua or the game jar changes.',
   javapVersion,
   jarBasename: path.basename(JAR_PATH),
+  jarBuildId: inferJarBuildId(JAR_PATH),
+  jarFileSha256: crypto.createHash('sha256').update(fs.readFileSync(JAR_PATH)).digest('hex'),
   sourceFile: path.relative(ROOT, LUA_PATH).replace(/\\/g, '/'),
   sourceFileSha256: crypto.createHash('sha256').update(rawSrc).digest('hex'),
   seedGlobals: acceptedSeeds,

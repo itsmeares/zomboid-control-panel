@@ -18,6 +18,7 @@ const LUA_PATH = argValue('--lua') || path.join(ROOT, 'integrations/panelbridge/
 const MANIFEST_PATH = argValue('--manifest') || path.join(__dirname, 'engine-signatures.manifest.json');
 const BASELINE_PATH = argValue('--baseline') || path.join(__dirname, 'engine-signatures.baseline.json');
 const REQUIRE_FRESH_MANIFEST = process.argv.includes('--require-fresh-manifest') || process.env.REQUIRE_FRESH_ENGINE_SIGNATURES === '1';
+const EXPECTED_PZ_BUILD_ID = argValue('--expected-pz-build-id') || process.env.EXPECTED_PZ_BUILD_ID || null;
 
 if (!fs.existsSync(MANIFEST_PATH)) {
   console.error(`Missing ${path.relative(ROOT, MANIFEST_PATH)} -- run scripts/gen-engine-signatures.mjs (needs a local JDK) and commit its output.`);
@@ -80,16 +81,31 @@ if (callSites.length < MIN_CALL_SITES) {
 }
 
 console.log('=== engine signature check (scripts/check-engine-signatures.mjs) ===');
-console.log(`manifest:              ${path.relative(ROOT, MANIFEST_PATH)} (generated ${manifest.generatedAt}, ${manifest.jarBasename})`);
+console.log(`manifest:              ${path.relative(ROOT, MANIFEST_PATH)} (generated ${manifest.generatedAt}, ${manifest.jarBasename}, build ${manifest.jarBuildId || 'unknown'})`);
 console.log(`source:                ${path.relative(ROOT, LUA_PATH)}`);
+
+if (REQUIRE_FRESH_MANIFEST) {
+  if (!manifest.jarBuildId || !/^[0-9]+$/.test(String(manifest.jarBuildId))) {
+    console.error('FAIL: the release gate requires a manifest tied to a Project Zomboid build ID. Regenerate it from the target server jar.');
+    process.exit(1);
+  }
+  if (!manifest.jarFileSha256 || !/^[0-9a-f]{64}$/i.test(manifest.jarFileSha256)) {
+    console.error('FAIL: the release gate requires the manifest to record the source jar SHA-256. Regenerate it with the current generator.');
+    process.exit(1);
+  }
+  if (EXPECTED_PZ_BUILD_ID && String(manifest.jarBuildId) !== EXPECTED_PZ_BUILD_ID.trim()) {
+    console.error(`FAIL: the manifest targets PZ build ${manifest.jarBuildId}, but the acceptance target requires ${EXPECTED_PZ_BUILD_ID.trim()}.`);
+    process.exit(1);
+  }
+}
 
 const currentSha = crypto.createHash('sha256').update(rawSrc).digest('hex');
 if (manifest.sourceFileSha256 && manifest.sourceFileSha256 !== currentSha) {
   console.log('');
   console.log('WARNING: PanelBridge.lua has changed since the manifest was generated.');
-  console.log('  This does NOT fail the gate (regenerating needs a local JDK + the game jar, not');
-  console.log('  available in CI) -- it means any NEW call site this edit introduced is checked only');
-  console.log('  if it happens to reuse a class already in the manifest. Run');
+  console.log('  The ordinary check continues for diagnostics, but the release gate fails below.');
+  console.log('  Any NEW call site this edit introduced is checked only if it happens to reuse a');
+  console.log('  class already in the manifest. Run');
   console.log('  `node scripts/gen-engine-signatures.mjs` locally and commit the refreshed manifest.');
   if (REQUIRE_FRESH_MANIFEST) {
     console.error('FAIL: the release gate requires a fresh engine signature manifest.');

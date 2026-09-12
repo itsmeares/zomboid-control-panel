@@ -13,15 +13,16 @@ Required environment:
   ZCP_ACCEPTANCE_PASSWORD             disposable admin password
   ZCP_ACCEPTANCE_PLATFORM             linux or windows
   ZCP_ACCEPTANCE_DEPLOYMENT           native-linux, native-windows, docker-all-in-one, or remote-rcon-sftp
-  ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA   build SHA served by the target artifact
-  ZCP_ACCEPTANCE_PZ_BUILD_ID          installed Steam app build ID, unless an install path is supplied
+  ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA   resolved commit SHA served by the target artifact
+  ZCP_ACCEPTANCE_PZ_BUILD_ID          expected installed Steam app build ID
   ZCP_ACCEPTANCE_OWNER                operator responsible for the target
   ZCP_ACCEPTANCE_REQUIRE_BRIDGE       1 or 0
 
 Optional environment:
   ZCP_ACCEPTANCE_PZ_INSTALL_PATH      local PZ install path on the acceptance runner
   ZCP_ACCEPTANCE_EXPECTED_PANEL_VERSION
-  ZCP_ACCEPTANCE_CORS_ORIGIN          origin to verify through a reverse proxy
+  ZCP_ACCEPTANCE_CORS_MODE            same-origin or cross-origin
+  ZCP_ACCEPTANCE_CORS_ORIGIN           origin to verify in cross-origin mode
   ZCP_ACCEPTANCE_TEST_STEAMCMD        1 to check SteamCMD discovery and branch lookup
   ZCP_ACCEPTANCE_TEST_LIFECYCLE       1 to stop and start the disposable server
   ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE    1 is required when lifecycle checks are enabled
@@ -43,6 +44,7 @@ const requiredValue = (name) => {
   return value;
 };
 const required = (name) => requiredValue(name).trim();
+const isFullSha = (value) => /^[0-9a-f]{40}$/i.test(value);
 
 const timeoutMs = Number(env.ZCP_ACCEPTANCE_TIMEOUT_MS || 30_000);
 if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000) {
@@ -128,8 +130,8 @@ function findCookie(headers, name) {
   return null;
 }
 
-async function request(route, { method = 'GET', body, auth = true, cookie, origin } = {}) {
-  const headers = { accept: 'application/json' };
+async function request(route, { method = 'GET', body, auth = true, cookie, origin, headers: extraHeaders } = {}) {
+  const headers = { accept: 'application/json', ...extraHeaders };
   if (auth && accessToken) headers.authorization = `Bearer ${accessToken}`;
   if (cookie) headers.cookie = cookie;
   if (origin) headers.origin = origin;
@@ -259,7 +261,35 @@ async function main() {
   const gate = one('ZCP_ACCEPTANCE_GATE');
   const lifecycle = one('ZCP_ACCEPTANCE_TEST_LIFECYCLE');
   const steamcmd = one('ZCP_ACCEPTANCE_TEST_STEAMCMD');
+  const corsMode = env.ZCP_ACCEPTANCE_CORS_MODE?.trim() || null;
+  const corsOrigin = env.ZCP_ACCEPTANCE_CORS_ORIGIN?.trim() || null;
+  if (corsMode && !['same-origin', 'cross-origin'].includes(corsMode)) {
+    throw new Error('ZCP_ACCEPTANCE_CORS_MODE must be same-origin or cross-origin');
+  }
+  if (corsMode === 'same-origin' && corsOrigin) {
+    throw new Error('ZCP_ACCEPTANCE_CORS_ORIGIN is only valid in cross-origin mode');
+  }
+  if (corsMode === 'cross-origin' && !corsOrigin) {
+    throw new Error('cross-origin acceptance requires ZCP_ACCEPTANCE_CORS_ORIGIN');
+  }
   if (gate) {
+    if (!isFullSha(required('ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA'))) {
+      throw new Error('The release gate requires a full 40-character artifact commit SHA');
+    }
+    if (deployment !== 'remote-rcon-sftp' && !env.ZCP_ACCEPTANCE_PZ_INSTALL_PATH?.trim()) {
+      throw new Error(
+        'The release gate needs ZCP_ACCEPTANCE_PZ_INSTALL_PATH so the installed PZ build is independently observed',
+      );
+    }
+    if (!env.ZCP_ACCEPTANCE_PZ_BUILD_ID?.trim()) {
+      throw new Error('The release gate needs ZCP_ACCEPTANCE_PZ_BUILD_ID as the expected PZ build ID');
+    }
+    if (deployment !== 'remote-rcon-sftp' && requireBridgeValue !== '1') {
+      throw new Error('Native and Docker release-gate targets must require PanelBridge with ZCP_ACCEPTANCE_REQUIRE_BRIDGE=1');
+    }
+    if (!corsMode) {
+      throw new Error('The release gate needs ZCP_ACCEPTANCE_CORS_MODE set to same-origin or cross-origin');
+    }
     const pzBuild = readPzBuild();
     if (!pzBuild?.buildId) {
       throw new Error(
@@ -378,6 +408,9 @@ async function main() {
     const result = await request('/api/servers/active/status');
     expectStatus(result);
     if (!result.body?.server) throw new Error('active status did not identify a server');
+    if (String(result.body.server.id) !== selectedServerId) {
+      throw new Error(`active server changed during acceptance: expected ${selectedServerId}, got ${result.body.server.id || 'none'}`);
+    }
   });
 
   await check('Server process status', async () => {
@@ -385,6 +418,10 @@ async function main() {
     expectStatus(result);
     if (typeof result.body?.running !== 'boolean' && typeof result.body?.scanFailed !== 'boolean') {
       throw new Error('server status did not return a process state');
+    }
+    const initialServerRunning = typeof result.body.running === 'boolean' ? result.body.running : null;
+    if (lifecycle && initialServerRunning !== true) {
+      throw new Error('lifecycle acceptance requires the selected server to be running before the stop check');
     }
   });
 
@@ -418,16 +455,40 @@ async function main() {
     if (result.body?.success !== true) throw new Error('console log endpoint did not report success');
   });
 
-  if (env.ZCP_ACCEPTANCE_CORS_ORIGIN?.trim()) {
+  if (corsMode === 'cross-origin') {
     await check('Configured CORS origin', async () => {
-      const origin = env.ZCP_ACCEPTANCE_CORS_ORIGIN.trim();
-      const result = await request('/api/health', { auth: false, origin });
+      const preflight = await request('/api/health', {
+        method: 'OPTIONS',
+        auth: false,
+        origin: corsOrigin,
+        headers: {
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'authorization, content-type',
+        },
+      });
+      expectStatus(preflight, 204);
+      if (preflight.response.headers.get('access-control-allow-origin') !== corsOrigin) {
+        throw new Error(`preflight did not allow ${corsOrigin}`);
+      }
+      if (preflight.response.headers.get('access-control-allow-credentials') !== 'true') {
+        throw new Error('preflight did not allow credentials');
+      }
+      const allowedMethods = preflight.response.headers.get('access-control-allow-methods') || '';
+      if (!/(^|,)\s*GET\s*(,|$)/i.test(allowedMethods)) {
+        throw new Error('preflight did not allow GET');
+      }
+      const result = await request('/api/health', { auth: false, origin: corsOrigin });
       expectStatus(result);
-      const allowed = result.response.headers.get('access-control-allow-origin');
-      if (allowed !== origin) throw new Error(`expected Access-Control-Allow-Origin ${origin}, got ${allowed || 'none'}`);
+      if (result.response.headers.get('access-control-allow-origin') !== corsOrigin) {
+        throw new Error(`expected Access-Control-Allow-Origin ${corsOrigin}`);
+      }
+    });
+  } else if (corsMode === 'same-origin') {
+    await check('Configured CORS origin', async () => {
+      console.log('same-origin target; browser acceptance covers same-origin credentials');
     });
   } else {
-    skip('Configured CORS origin', 'ZCP_ACCEPTANCE_CORS_ORIGIN was not set');
+    skip('Configured CORS origin', 'ZCP_ACCEPTANCE_CORS_MODE was not set for a non-gate run');
   }
 
   if (env.ZCP_ACCEPTANCE_REQUIRE_BRIDGE === '1') {
@@ -468,25 +529,40 @@ async function main() {
     if (!one('ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE')) {
       throw new Error('lifecycle checks require ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE=1');
     }
-    await check('Server stop', async () => {
-      const result = await request('/api/server/stop', { method: 'POST', body: {} });
-      expectStatus(result);
-      await waitForServerState(false);
-    });
+    let stopAccepted = false;
+    try {
+      await check('Server stop', async () => {
+        // Arm cleanup before the destructive request: a lost response can still
+        // mean the target accepted the stop command.
+        stopAccepted = true;
+        const result = await request('/api/server/stop', { method: 'POST', body: {} });
+        expectStatus(result);
+        await waitForServerState(false);
+      });
 
-    await check('Server start', async () => {
-      const result = await request('/api/server/start', { method: 'POST', body: {} });
-      expectStatus(result);
-      await waitForServerState(true);
-      const rcon = await request('/api/rcon/health');
-      expectStatus(rcon);
-      if (rcon.body?.success !== true) throw new Error('RCON did not recover after server start');
-      if (env.ZCP_ACCEPTANCE_REQUIRE_BRIDGE === '1') {
-        const bridge = await request('/api/panel-bridge/ping');
-        expectStatus(bridge);
-        if (bridge.body?.success !== true) throw new Error('PanelBridge did not recover after server start');
+      await check('Server start', async () => {
+        const result = await request('/api/server/start', { method: 'POST', body: {} });
+        expectStatus(result);
+        await waitForServerState(true);
+        const rcon = await request('/api/rcon/health');
+        expectStatus(rcon);
+        if (rcon.body?.success !== true) throw new Error('RCON did not recover after server start');
+        if (env.ZCP_ACCEPTANCE_REQUIRE_BRIDGE === '1') {
+          const bridge = await request('/api/panel-bridge/ping');
+          expectStatus(bridge);
+          if (bridge.body?.success !== true) throw new Error('PanelBridge did not recover after server start');
+        }
+        stopAccepted = false;
+      });
+    } finally {
+      if (stopAccepted) {
+        await check('Server cleanup restart', async () => {
+          const result = await request('/api/server/start', { method: 'POST', body: {} });
+          expectStatus(result);
+          await waitForServerState(true);
+        });
       }
-    });
+    }
   } else {
     skip('Server stop and start', 'ZCP_ACCEPTANCE_TEST_LIFECYCLE was not set');
   }

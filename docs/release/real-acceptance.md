@@ -5,8 +5,15 @@ filesystem boundaries, and a packaged panel smoke test. That is useful fast
 feedback, but it cannot prove that a release controls a real game server.
 
 Run `.github/workflows/real-acceptance.yml` before an RC or stable release.
-The workflow is manual because the targets need disposable Project Zomboid
-installs and self-hosted runners.
+The workflow remains manually dispatchable for rehearsal, and is also called
+by `release-artifacts.yml`; publication waits for every acceptance row.
+
+The release workflow assumes each target environment has already been
+updated with the exact artifact built from the release tag. The acceptance job
+resolves that tag to one full commit SHA and rejects any target whose health
+endpoint reports another SHA. Deployment is an environment operation because
+the targets are private, disposable self-hosted machines; do not publish a
+release until that deployment has completed.
 
 ## Matrix
 
@@ -17,8 +24,9 @@ installs and self-hosted runners.
 | Docker all-in-one | `self-hosted-linux-pz-docker` | `docker-all-in-one` | disposable Compose stack with persistent volumes and a pinned PZ build |
 
 The panel URL in each GitHub Environment must point at the artifact built from
-the selected ref. `ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA` makes the runner reject a
-target that is serving a different artifact.
+the selected ref. The workflow supplies the expected full commit SHA from its
+immutable ref resolution; there is no operator-controlled expected SHA to
+keep in environment variables.
 
 For a panel-only remote deployment, run the script on a fourth self-hosted
 runner with `ZCP_ACCEPTANCE_DEPLOYMENT=remote-rcon-sftp` and
@@ -32,15 +40,16 @@ Each GitHub Environment needs these variables:
 
 - `ZCP_ACCEPTANCE_URL`
 - `ZCP_ACCEPTANCE_OWNER`
-- `ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA`
 - `ZCP_ACCEPTANCE_EXPECTED_PANEL_VERSION`
-- `ZCP_ACCEPTANCE_PZ_BUILD_ID`, or `ZCP_ACCEPTANCE_PZ_INSTALL_PATH` on the runner
+- `ZCP_ACCEPTANCE_PZ_BUILD_ID`
+- `ZCP_ACCEPTANCE_PZ_INSTALL_PATH` on native and Docker runners
 - `ZCP_ACCEPTANCE_SERVER_ID`
-- `ZCP_ACCEPTANCE_REQUIRE_BRIDGE`, set to `1` or `0`
-- `ZCP_ACCEPTANCE_CORS_ORIGIN` when the target is behind a reverse proxy
-- `ZCP_ACCEPTANCE_TEST_STEAMCMD`, set to `1` for native and all-in-one rows
-- `ZCP_ACCEPTANCE_TEST_LIFECYCLE`, set to `1` for disposable native and Docker rows
-- `ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE`, set to `1` for those lifecycle rows
+- `ZCP_ACCEPTANCE_REQUIRE_BRIDGE=1` for native and Docker release rows
+- `ZCP_ACCEPTANCE_CORS_MODE`, set to `same-origin` or `cross-origin`
+- `ZCP_ACCEPTANCE_CORS_ORIGIN` when CORS mode is `cross-origin`
+- `ZCP_ACCEPTANCE_TEST_STEAMCMD=1` for native and all-in-one rows
+- `ZCP_ACCEPTANCE_TEST_LIFECYCLE=1` for disposable native and Docker rows
+- `ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE=1` for those lifecycle rows
 
 Store only the disposable admin credentials as Environment secrets:
 
@@ -53,16 +62,30 @@ start the server. The script never runs a world-changing RCON command. It uses
 
 ## Checks
 
-The runner checks the PZ app manifest or the declared remote build ID, panel
-health and artifact SHA, authentication rejection, login, refresh-cookie
-session, managed-server discovery, process status, live RCON health and
-command execution, console logs, PanelBridge status and ping, optional CORS,
-and SteamCMD discovery and branch lookup. Native and Docker rows also stop and
-start the disposable server, then verify RCON and PanelBridge recovery.
+The runner checks the PZ app manifest, panel health and artifact SHA,
+authentication rejection, API login, and managed-server discovery. It then
+checks process status, live RCON health and command execution, console logs,
+PanelBridge status and ping, CORS mode, and SteamCMD discovery and branch
+lookup. The browser runner separately logs in through the real panel, proves a
+successful TanStack Start server-function request, hard-reloads, and proves
+that the protected dashboard and HttpOnly refresh cookie survive. Native and
+Docker rows also stop and start the disposable server, then verify RCON and
+PanelBridge recovery.
+
+Release-gate rows fail closed when PanelBridge, CORS mode, the PZ install
+identity, SteamCMD, or lifecycle evidence is missing. A non-gate/manual
+diagnostic run may show explicit `SKIP` entries, but a skipped required row is
+not a release pass. The lifecycle cleanup is armed before the stop request and
+always attempts to restart the target after a stop was attempted.
 
 The workflow also runs the static bridge and RCON audits. The engine signature
 check uses `--require-fresh-manifest`, so a changed `PanelBridge.lua` cannot
-silently pass against an old manifest.
+silently pass against an old manifest. The checked-in manifest records the
+source hash, Project Zomboid build ID, and jar hash used to generate it; when
+the pinned PZ build changes, regenerate it with that exact server jar before
+updating the acceptance environment. The gate also compares the manifest build
+ID with `ZCP_ACCEPTANCE_PZ_BUILD_ID`, so a fresh manifest for the wrong PZ
+build cannot pass.
 
 Each row uploads a small JSON result under the workflow run. It contains no
 password, token, cookie, or raw server log. Keep the operator's full logs in

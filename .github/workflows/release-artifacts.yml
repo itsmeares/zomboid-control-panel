@@ -98,7 +98,9 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: build
+    needs:
+      - build
+      - acceptance
     runs-on: ubuntu-22.04
 
     steps:
@@ -187,3 +189,10 @@ jobs:
             sleep 5
           done
           exit 1
+
+  acceptance:
+    needs: build
+    uses: ./.github/workflows/real-acceptance.yml
+    with:
+      ref: ${{ github.ref_name }}
+    secrets: inherit
