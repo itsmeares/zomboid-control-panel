@@ -231,7 +231,14 @@ const authRequestMiddleware = createMiddleware({ type: 'request' }).server(
       )
     }
 
-    return next({ context: { authenticatedUser: result.user } })
+    const authenticatedContext = { authenticatedUser: result.user }
+    const nextContext = {
+      context: authenticatedContext,
+      // The split server-function adapter receives sendContext from
+      // __executeServer when it invokes the server-only implementation.
+      sendContext: authenticatedContext,
+    }
+    return next(nextContext)
   },
 )
 
