@@ -201,6 +201,14 @@ jobs:
       - name: Smoke-test packaged Windows release
         run: node scripts/smoke-release.mjs
 
+      - name: Install Chromium for packaged auth smoke
+        run: pnpm exec playwright install chromium
+
+      - name: Smoke-test packaged auth persistence
+        env:
+          RUN_AUTH_SMOKE: "1"
+        run: node scripts/smoke-release.mjs
+
       - name: Verify packaged updater artifacts
         shell: pwsh
         run: |

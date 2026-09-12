@@ -170,6 +170,8 @@ router.post("/setup", setupLimiter, async (req, res) => {
         result.refreshToken,
         getRefreshCookieOptions(req),
       );
+    } else {
+      res.clearCookie("refreshToken", getRefreshCookieOptions(req, false));
     }
 
     log.info(`Setup complete — admin account created: ${username}`);
@@ -206,6 +208,8 @@ router.post("/login", loginLimiter, async (req, res) => {
         result.refreshToken,
         getRefreshCookieOptions(req),
       );
+    } else {
+      res.clearCookie("refreshToken", getRefreshCookieOptions(req, false));
     }
 
     res.json({

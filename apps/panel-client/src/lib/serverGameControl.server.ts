@@ -212,7 +212,9 @@ function createControlAction<T>(
     createServerFn({ method: 'POST' })
       .middleware(capabilityMiddleware(capability))
       .validator((data: unknown) => record(data))
-      .handler(({ data, context }) => implementation(data, context) as any),
+      .handler(({ data, context }) =>
+        implementation(data, context as unknown as AnyRecord) as any,
+      ),
     { __executeImplementation: implementation },
   )
 }

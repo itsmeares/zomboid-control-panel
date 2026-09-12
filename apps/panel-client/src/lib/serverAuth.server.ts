@@ -204,16 +204,19 @@ const refreshCookieOptions = createServerOnlyFn(
   },
 )
 
-const setRefreshCookie = createServerOnlyFn(
-  async (refreshToken: string | null): Promise<void> => {
-    if (!refreshToken) return
-    setCookie('refreshToken', refreshToken, await refreshCookieOptions())
-  },
-)
-
 const clearRefreshCookieForRequest = createServerOnlyFn(
   async (): Promise<void> => {
     deleteCookie('refreshToken', await refreshCookieOptions(false))
+  },
+)
+
+const setRefreshCookie = createServerOnlyFn(
+  async (refreshToken: string | null): Promise<void> => {
+    if (!refreshToken) {
+      await clearRefreshCookieForRequest()
+      return
+    }
+    setCookie('refreshToken', refreshToken, await refreshCookieOptions())
   },
 )
 

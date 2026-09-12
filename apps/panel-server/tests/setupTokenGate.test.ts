@@ -21,6 +21,7 @@ function createResponse() {
     status: vi.fn(),
     json: vi.fn(),
     cookie: vi.fn(),
+    clearCookie: vi.fn(),
     setHeader: vi.fn(),
     getHeader: vi.fn(),
     removeHeader: vi.fn(),
@@ -28,6 +29,7 @@ function createResponse() {
   };
   response.status.mockReturnValue(response);
   response.cookie.mockReturnValue(response);
+  response.clearCookie.mockReturnValue(response);
   return response;
 }
 
@@ -183,6 +185,10 @@ describe("POST /api/auth/setup — the setup-token gate", () => {
     const firstRes = createResponse();
     await runRoute("/setup", "post", firstReq, firstRes);
     expect(firstRes.status).toHaveBeenCalledWith(201);
+    expect(firstRes.clearCookie).toHaveBeenCalledWith(
+      "refreshToken",
+      expect.objectContaining({ path: "/api/auth" }),
+    );
     expect(db.data.users.length).toBe(1);
     expect(settings.get("setupToken")).toBeNull();
 

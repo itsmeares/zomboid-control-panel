@@ -103,6 +103,120 @@ async function waitForHealth(baseUrl, child, output) {
   );
 }
 
+async function waitForVisible(page, selector, label) {
+  try {
+    await page.locator(selector).waitFor({ state: 'visible', timeout: 15_000 });
+  } catch {
+    throw new Error(`Packaged auth smoke did not reach ${label}`);
+  }
+}
+
+// Cookies scoped to /api/auth are not returned for the app root URL.
+async function getRefreshCookie(context, baseUrl) {
+  return (await context.cookies(new URL('/api/auth/refresh', baseUrl).href)).find(
+    (cookie) => cookie.name === 'refreshToken',
+  );
+}
+
+async function assertNoRefreshCookie(context, baseUrl) {
+  const hasRefreshCookie = await getRefreshCookie(context, baseUrl);
+  if (hasRefreshCookie) {
+    throw new Error('Packaged auth smoke found a refresh cookie unexpectedly');
+  }
+}
+
+async function assertRememberMeCookie(context, baseUrl) {
+  const refreshCookie = await getRefreshCookie(context, baseUrl);
+  if (!refreshCookie || !refreshCookie.httpOnly || refreshCookie.path !== '/api/auth') {
+    throw new Error('Packaged auth smoke received an invalid remember-me cookie');
+  }
+  if (String(refreshCookie.sameSite).toLowerCase() !== 'strict') {
+    throw new Error('Packaged auth smoke received a refresh cookie without SameSite=Strict');
+  }
+}
+
+async function runAuthSmoke(baseUrl, setupToken) {
+  const { chromium } = await import('@playwright/test');
+  const browser = await chromium.launch({ headless: true });
+  const apiUrl = (pathname) => new URL(pathname, baseUrl).href;
+  const password = 'release-smoke-password';
+  const username = 'smokeadmin';
+  const context = await browser.newContext({ baseURL: baseUrl });
+
+  try {
+    const page = await context.newPage();
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    await waitForVisible(page, '#setupToken', 'first-run setup');
+    await page.locator('#setupToken').fill(setupToken);
+    await page.locator('#username').fill(username);
+    await page.locator('#panelPort').fill(new URL(baseUrl).port);
+    await page.locator('#password').fill(password);
+    await page.locator('#confirmPassword').fill(password);
+    await page.getByRole('button', { name: 'Create account & continue' }).click();
+    await waitForVisible(page, 'button[title="Sign out"]', 'authenticated dashboard after setup');
+
+    await assertRememberMeCookie(context, baseUrl);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForVisible(page, 'button[title="Sign out"]', 'authenticated dashboard after hard reload');
+
+    const logoutResponse = await context.request.post(apiUrl('/api/auth/logout'));
+    if (!logoutResponse.ok()) {
+      throw new Error(`Packaged auth smoke logout failed: ${logoutResponse.status()}`);
+    }
+    await assertNoRefreshCookie(context, baseUrl);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForVisible(page, '#login-form', 'login screen after logout');
+
+    const noRememberContext = await browser.newContext({ baseURL: baseUrl });
+    try {
+      const noRememberPage = await noRememberContext.newPage();
+      await noRememberPage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await waitForVisible(noRememberPage, '#login-form', 'login screen');
+      await noRememberPage.locator('#username').fill(username);
+      await noRememberPage.locator('#password').fill(password);
+      const rememberMe = noRememberPage.locator('#rememberMe');
+      if ((await rememberMe.getAttribute('aria-checked')) === 'true') {
+        await rememberMe.click();
+      }
+      await noRememberPage.getByRole('button', { name: 'Sign in' }).click();
+      await waitForVisible(noRememberPage, 'button[title="Sign out"]', 'dashboard after non-persistent login');
+      await assertNoRefreshCookie(noRememberContext, baseUrl);
+      await noRememberPage.reload({ waitUntil: 'domcontentloaded' });
+      await waitForVisible(noRememberPage, '#login-form', 'login after non-persistent hard reload');
+    } finally {
+      await noRememberContext.close();
+    }
+
+    const rememberedLogin = await context.request.post(apiUrl('/api/auth/login'), {
+      data: { username, password, rememberMe: true },
+    });
+    if (!rememberedLogin.ok()) {
+      throw new Error(`Packaged auth smoke persistent login failed: ${rememberedLogin.status()}`);
+    }
+    if (!(await getRefreshCookie(context, baseUrl))) {
+      throw new Error('Packaged auth smoke did not receive a persistent login cookie');
+    }
+
+    const nonPersistentLogin = await context.request.post(apiUrl('/api/auth/login'), {
+      data: { username, password, rememberMe: false },
+    });
+    if (!nonPersistentLogin.ok()) {
+      throw new Error(`Packaged auth smoke non-persistent login failed: ${nonPersistentLogin.status()}`);
+    }
+    await assertNoRefreshCookie(context, baseUrl);
+    const refreshAfterNonPersistentLogin = await context.request.post(apiUrl('/api/auth/refresh'));
+    if (refreshAfterNonPersistentLogin.status() !== 401) {
+      throw new Error(
+        `Packaged auth smoke refresh unexpectedly succeeded after remember-me was disabled: ${refreshAfterNonPersistentLogin.status()}`,
+      );
+    }
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
 async function main() {
   const platform =
     process.platform === 'win32'
@@ -143,6 +257,8 @@ async function main() {
     path.join(os.tmpdir(), 'better-zcp-release-smoke-'),
   );
   const smokeReleaseDir = path.join(temporaryRoot, 'release');
+  const authSmokeEnabled = process.env.RUN_AUTH_SMOKE === '1';
+  const authSmokeSetupToken = 'release-smoke-setup-token';
   let child;
   let capturedOutput = '';
   const output = () => capturedOutput.slice(-32_000);
@@ -158,7 +274,12 @@ async function main() {
     );
     child = spawn(binary, [], {
       cwd: smokeReleaseDir,
-      env: { ...process.env, PANEL_NO_SUPERVISOR: '1', PORT: String(port) },
+      env: {
+        ...process.env,
+        PANEL_NO_SUPERVISOR: '1',
+        PORT: String(port),
+        ...(authSmokeEnabled ? { SETUP_TOKEN: authSmokeSetupToken } : {}),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.on('data', (chunk) => {
@@ -214,8 +335,12 @@ async function main() {
         `Packaged JavaScript HEAD request failed: ${headResponse.status}`,
       );
 
+    if (authSmokeEnabled) {
+      await runAuthSmoke(baseUrl, authSmokeSetupToken);
+    }
+
     console.log(
-      `${platform} release smoke passed: ${manifest.version}, /api/health, ${assetPath} GET/HEAD`,
+      `${platform} release smoke passed: ${manifest.version}, /api/health, ${assetPath} GET/HEAD${authSmokeEnabled ? ', browser auth persistence' : ''}`,
     );
   } finally {
     if (child) await stopChild(child);
