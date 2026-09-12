@@ -159,14 +159,14 @@ async function runAuthSmoke(baseUrl, setupToken) {
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitForVisible(page, 'button[title="Sign out"]', 'authenticated dashboard after hard reload');
+    await assertRememberMeCookie(context, baseUrl);
 
-    const logoutResponse = await context.request.post(apiUrl('/api/auth/logout'));
-    if (!logoutResponse.ok()) {
-      throw new Error(`Packaged auth smoke logout failed: ${logoutResponse.status()}`);
-    }
-    await assertNoRefreshCookie(context, baseUrl);
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await waitForVisible(page, '#login-form', 'login screen after logout');
+    await waitForVisible(page, 'button[title="Sign out"]', 'authenticated dashboard after second hard reload');
+
+    await page.locator('button[title="Sign out"]').click();
+    await waitForVisible(page, '#login-form', 'login screen after dashboard logout');
+    await assertNoRefreshCookie(context, baseUrl);
 
     const noRememberContext = await browser.newContext({ baseURL: baseUrl });
     try {
