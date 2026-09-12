@@ -1,5 +1,6 @@
 import { createServerFn } from '@tanstack/react-start'
 import {
+  anyPermissionMiddleware,
   permissionMiddleware,
   protectedServerFunctionMiddleware,
 } from './serverAuth.server'
@@ -51,21 +52,23 @@ function invalid(message: string, code?: string): never {
   )
 }
 
-function capabilityMiddleware(capability: string) {
+function capabilityMiddleware(capability: string | string[]) {
   return [
     ...protectedServerFunctionMiddleware,
-    permissionMiddleware(capability),
+    Array.isArray(capability)
+      ? anyPermissionMiddleware(...capability)
+      : permissionMiddleware(capability),
   ] as const
 }
 
 function createResourceRead<T>(
-  capability: string | undefined,
+  capability: string | string[] | undefined,
   handler: (data: AnyRecord) => Promise<T> | T,
 ) {
   const serverFn = createServerFn({ method: 'GET' })
   const secured = capability
     ? serverFn.middleware(capabilityMiddleware(capability))
-    : serverFn
+    : serverFn.middleware(protectedServerFunctionMiddleware)
 
   const implementation = async (data: AnyRecord): Promise<T> => {
     try {
@@ -163,17 +166,21 @@ export const getPlayerStat = createResourceRead(
   },
 )
 
-export const getBackupStatus = createResourceRead(undefined, async () =>
-  (await panelRuntime()).backupService.getStatus(),
+export const getBackupStatus = createResourceRead(
+  ['backups.manage', 'backups.download', 'backups.restore'],
+  async () => (await panelRuntime()).backupService.getStatus(),
 )
 
 export const getBackupInfo = createResourceRead(undefined, async () =>
   (await panelRuntime()).backupService.getBackupContentsInfo(),
 )
 
-export const getBackups = createResourceRead(undefined, async () => ({
-  backups: await (await panelRuntime()).backupService.listBackups(),
-}))
+export const getBackups = createResourceRead(
+  ['backups.manage', 'backups.download', 'backups.restore'],
+  async () => ({
+    backups: await (await panelRuntime()).backupService.listBackups(),
+  }),
+)
 
 export const getBackupSnapshot = createResourceRead(
   'backups.manage',
@@ -191,23 +198,26 @@ export const getBackupSnapshot = createResourceRead(
   },
 )
 
-export const getBackupHistory = createResourceRead(undefined, async (data) => {
-  const { parseClampedInteger } =
-    await import('../../../panel-server/utils/queryNumbers.ts')
-  const { listBackupRecords } =
-    await import('../../../panel-server/services/backupRecords.ts')
-  let limit: number | undefined
-  if (data.limit !== undefined) {
-    const parsed = parseClampedInteger(data.limit, null, 1, 500)
-    if (parsed === null) invalid('Invalid history limit')
-    limit = parsed
-  }
-  const serverId =
-    typeof data.serverId === 'string' || typeof data.serverId === 'number'
-      ? data.serverId
-      : undefined
-  return { records: await listBackupRecords({ serverId, limit }) }
-})
+export const getBackupHistory = createResourceRead(
+  ['backups.manage', 'backups.download', 'backups.restore'],
+  async (data) => {
+    const { parseClampedInteger } =
+      await import('../../../panel-server/utils/queryNumbers.ts')
+    const { listBackupRecords } =
+      await import('../../../panel-server/services/backupRecords.ts')
+    let limit: number | undefined
+    if (data.limit !== undefined) {
+      const parsed = parseClampedInteger(data.limit, null, 1, 500)
+      if (parsed === null) invalid('Invalid history limit')
+      limit = parsed
+    }
+    const serverId =
+      typeof data.serverId === 'string' || typeof data.serverId === 'number'
+        ? data.serverId
+        : undefined
+    return { records: await listBackupRecords({ serverId, limit }) }
+  },
+)
 
 export const getTemplates = createResourceRead(undefined, async () => {
   const { listTemplates } =
