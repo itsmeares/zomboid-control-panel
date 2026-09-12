@@ -1,0 +1,1 @@
+import{K as e,q as t}from"./index-DsS4Vh4m.js";function n(n,r){let i=typeof n.progressCode==`string`&&n.progressCode?n.progressCode:void 0;if(!i)return r;let a=e(n.params);return t(`installProgress`,i,a)??r}export{n as t};
