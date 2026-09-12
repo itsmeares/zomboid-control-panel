@@ -135,6 +135,21 @@ async function assertRememberMeCookie(context, baseUrl) {
   }
 }
 
+async function reloadWithRefresh(page, refreshUrl, label) {
+  // A hard reload drops the module-scoped access token, so the app must use
+  // the refresh cookie. Observe that request instead of inferring it from UI state.
+  const refreshResponse = page.waitForResponse(
+    (response) =>
+      response.url() === refreshUrl && response.request().method() === 'POST',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const response = await refreshResponse;
+  if (!response.ok()) {
+    throw new Error(`Packaged auth smoke refresh failed: ${response.status()}`);
+  }
+  await waitForVisible(page, 'button[title="Sign out"]', label);
+}
+
 async function runAuthSmoke(baseUrl, setupToken) {
   const { chromium } = await import('@playwright/test');
   const browser = await chromium.launch({ headless: true });
@@ -157,15 +172,25 @@ async function runAuthSmoke(baseUrl, setupToken) {
 
     await assertRememberMeCookie(context, baseUrl);
 
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await waitForVisible(page, 'button[title="Sign out"]', 'authenticated dashboard after hard reload');
+    const refreshUrl = apiUrl('/api/auth/refresh');
+    await reloadWithRefresh(
+      page,
+      refreshUrl,
+      'authenticated dashboard after hard reload',
+    );
     await assertRememberMeCookie(context, baseUrl);
 
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await waitForVisible(page, 'button[title="Sign out"]', 'authenticated dashboard after second hard reload');
+    await reloadWithRefresh(
+      page,
+      refreshUrl,
+      'authenticated dashboard after second hard reload',
+    );
 
     await page.locator('button[title="Sign out"]').click();
     await waitForVisible(page, '#login-form', 'login screen after dashboard logout');
+    await assertNoRefreshCookie(context, baseUrl);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForVisible(page, '#login-form', 'login screen after logout reload');
     await assertNoRefreshCookie(context, baseUrl);
 
     const noRememberContext = await browser.newContext({ baseURL: baseUrl });
