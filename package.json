@@ -27,6 +27,7 @@
     "build:exe:linux": "node scripts/release/build.mjs --linux",
     "build:exe:all": "node scripts/release/build.mjs --all",
     "smoke:release": "node scripts/smoke-release.mjs",
+    "acceptance:real": "node scripts/acceptance-release.mjs",
     "check:client-boundary": "node scripts/check-client-boundary.mjs",
     "start": "pnpm --filter @better-zcp/panel-server start",
     "test": "pnpm run test:server && pnpm run test:client",

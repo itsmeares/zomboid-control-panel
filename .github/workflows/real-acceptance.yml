@@ -1,0 +1,87 @@
+name: Real release acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch, or tag whose deployed artifact is being checked
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux native
+            runner: self-hosted-linux-pz
+            environment: acceptance-linux-native
+            platform: linux
+            deployment: native-linux
+          - name: Windows native
+            runner: self-hosted-windows-pz
+            environment: acceptance-windows-native
+            platform: windows
+            deployment: native-windows
+          - name: Docker all-in-one
+            runner: self-hosted-linux-pz-docker
+            environment: acceptance-docker
+            platform: linux
+            deployment: docker-all-in-one
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ matrix.environment }}
+
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+
+      - name: Reject stale engine signature manifest
+        run: node scripts/check-engine-signatures.mjs --require-fresh-manifest
+
+      - name: Run static bridge and RCON checks
+        run: |
+          node scripts/audit-bridge-actions.mjs .
+          node scripts/audit-bridge-routes.mjs .
+          node scripts/audit-rcon-commands.mjs .
+
+      - name: Run real acceptance matrix row
+        env:
+          ZCP_ACCEPTANCE_GATE: "1"
+          ZCP_ACCEPTANCE_URL: ${{ vars.ZCP_ACCEPTANCE_URL }}
+          ZCP_ACCEPTANCE_USERNAME: ${{ secrets.ZCP_ACCEPTANCE_USERNAME }}
+          ZCP_ACCEPTANCE_PASSWORD: ${{ secrets.ZCP_ACCEPTANCE_PASSWORD }}
+          ZCP_ACCEPTANCE_PLATFORM: ${{ matrix.platform }}
+          ZCP_ACCEPTANCE_DEPLOYMENT: ${{ matrix.deployment }}
+          ZCP_ACCEPTANCE_OWNER: ${{ vars.ZCP_ACCEPTANCE_OWNER }}
+          ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA: ${{ vars.ZCP_ACCEPTANCE_EXPECTED_BUILD_SHA }}
+          ZCP_ACCEPTANCE_EXPECTED_PANEL_VERSION: ${{ vars.ZCP_ACCEPTANCE_EXPECTED_PANEL_VERSION }}
+          ZCP_ACCEPTANCE_PZ_BUILD_ID: ${{ vars.ZCP_ACCEPTANCE_PZ_BUILD_ID }}
+          ZCP_ACCEPTANCE_PZ_INSTALL_PATH: ${{ vars.ZCP_ACCEPTANCE_PZ_INSTALL_PATH }}
+          ZCP_ACCEPTANCE_SERVER_ID: ${{ vars.ZCP_ACCEPTANCE_SERVER_ID }}
+          ZCP_ACCEPTANCE_REQUIRE_BRIDGE: ${{ vars.ZCP_ACCEPTANCE_REQUIRE_BRIDGE }}
+          ZCP_ACCEPTANCE_CORS_ORIGIN: ${{ vars.ZCP_ACCEPTANCE_CORS_ORIGIN }}
+          ZCP_ACCEPTANCE_TEST_STEAMCMD: ${{ vars.ZCP_ACCEPTANCE_TEST_STEAMCMD }}
+          ZCP_ACCEPTANCE_TEST_LIFECYCLE: ${{ vars.ZCP_ACCEPTANCE_TEST_LIFECYCLE }}
+          ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE: ${{ vars.ZCP_ACCEPTANCE_ALLOW_DESTRUCTIVE }}
+          ZCP_ACCEPTANCE_EVIDENCE_PATH: ${{ runner.temp }}/better-zcp-real-acceptance.json
+        run: node scripts/acceptance-release.mjs
+
+      - name: Upload redacted evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: real-acceptance-${{ matrix.platform }}-${{ matrix.deployment }}
+          path: ${{ runner.temp }}/better-zcp-real-acceptance.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -9,6 +9,7 @@ services:
     environment:
       NODE_ENV: production
       TRUST_PROXY: ${TRUST_PROXY:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     volumes:
       - panel-data:/app/data
       - panel-logs:/app/logs

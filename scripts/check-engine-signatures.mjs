@@ -17,6 +17,7 @@ function argValue(flag) {
 const LUA_PATH = argValue('--lua') || path.join(ROOT, 'integrations/panelbridge/PanelBridge/media/lua/server/PanelBridge.lua');
 const MANIFEST_PATH = argValue('--manifest') || path.join(__dirname, 'engine-signatures.manifest.json');
 const BASELINE_PATH = argValue('--baseline') || path.join(__dirname, 'engine-signatures.baseline.json');
+const REQUIRE_FRESH_MANIFEST = process.argv.includes('--require-fresh-manifest') || process.env.REQUIRE_FRESH_ENGINE_SIGNATURES === '1';
 
 if (!fs.existsSync(MANIFEST_PATH)) {
   console.error(`Missing ${path.relative(ROOT, MANIFEST_PATH)} -- run scripts/gen-engine-signatures.mjs (needs a local JDK) and commit its output.`);
@@ -90,6 +91,10 @@ if (manifest.sourceFileSha256 && manifest.sourceFileSha256 !== currentSha) {
   console.log('  available in CI) -- it means any NEW call site this edit introduced is checked only');
   console.log('  if it happens to reuse a class already in the manifest. Run');
   console.log('  `node scripts/gen-engine-signatures.mjs` locally and commit the refreshed manifest.');
+  if (REQUIRE_FRESH_MANIFEST) {
+    console.error('FAIL: the release gate requires a fresh engine signature manifest.');
+    process.exit(1);
+  }
 }
 
 console.log('');

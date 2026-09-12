@@ -32,5 +32,6 @@ inspected SHA. Before each future release, compare the new upstream head,
 append changed behavior here, and add a regression test for every adopted fix.
 
 Real Project Zomboid, RCON, SteamCMD, Windows, and remote transport acceptance
-still require an operator environment; this repository run uses controlled
-fakes and local filesystem/network boundaries.
+run through the [real acceptance runbook](release/real-acceptance.md). This
+repository run still uses controlled fakes and local filesystem/network
+boundaries for fast CI.

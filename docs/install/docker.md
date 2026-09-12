@@ -509,21 +509,16 @@ Path D actually wire it up out of the box:
   ```sh
   docker compose up -d
   ```
-- **Path C (docker-compose.install.yml):** **no wiring for this at all** —
-  there's no `CORS_ORIGINS` line, commented or otherwise, anywhere in the
-  file. If you need the panel reachable through a reverse proxy or public
-  hostname on this path, add the line yourself before starting the stack:
+- **Path C (docker-compose.install.yml):** set `CORS_ORIGINS` in a `.env`
+  file next to the compose file, or edit the environment block directly:
   ```yaml
   environment:
     NODE_ENV: production
     TRUST_PROXY: ${TRUST_PROXY:-false}
     CORS_ORIGINS: https://panel.example.com
   ```
-  This works — the panel reads `CORS_ORIGINS` from its process environment
-  regardless of which compose file set it — but you're editing in a value
-  the file doesn't otherwise expose. If you'd rather not hand-edit the
-  compose file, use [Path B](#path-b-docker-composeyml-bind-mounts) instead,
-  which has the field ready to uncomment.
+  The shipped file maps `${CORS_ORIGINS}` from `.env`, so apply the change
+  with `docker compose -f docker-compose.install.yml up -d`.
 - **Path D (Unraid):** already wired — it's the **CORS origins** field under
   the template's advanced settings (blank by default, LAN-only). Expand
   "Show more settings" if you don't see it.
