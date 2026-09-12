@@ -28,64 +28,79 @@ async function panelRuntime(): Promise<AnyRecord> {
   return getPanelRuntime()
 }
 
+async function checkPanelUpdateImplementation() {
+  try {
+    const checker = (await panelRuntime()).panelUpdateChecker
+    if (!checker) throw new Error('Panel update checker not available')
+    return await checker.checkForUpdate()
+  } catch (error) {
+    throwPanelError(error, 500)
+  }
+}
+
 export const checkPanelUpdate = createServerFn({ method: 'GET' })
   .middleware(protectedServerFunctionMiddleware)
-  .handler(async () => {
-    try {
-      const checker = (await panelRuntime()).panelUpdateChecker
-      if (!checker) throw new Error('Panel update checker not available')
-      return await checker.checkForUpdate()
-    } catch (error) {
-      throwPanelError(error, 500)
-    }
-  })
+  .handler(checkPanelUpdateImplementation)
+;(checkPanelUpdate as any).__executeImplementation =
+  checkPanelUpdateImplementation
+
+async function getPanelUpdateStatusImplementation() {
+  try {
+    const checker = (await panelRuntime()).panelUpdateChecker
+    if (!checker) throw new Error('Panel update checker not available')
+    return checker.getStatus()
+  } catch (error) {
+    throwPanelError(error, 500)
+  }
+}
 
 export const getPanelUpdateStatus = createServerFn({ method: 'GET' })
   .middleware(protectedServerFunctionMiddleware)
-  .handler(async () => {
-    try {
-      const checker = (await panelRuntime()).panelUpdateChecker
-      if (!checker) throw new Error('Panel update checker not available')
-      return checker.getStatus()
-    } catch (error) {
-      throwPanelError(error, 500)
-    }
-  })
+  .handler(getPanelUpdateStatusImplementation)
+;(getPanelUpdateStatus as any).__executeImplementation =
+  getPanelUpdateStatusImplementation
+
+async function getPanelUpdatePreflightImplementation() {
+  try {
+    const checker = (await panelRuntime()).panelUpdateChecker
+    if (!checker) throw new Error('Panel update checker not available')
+    return await checker.preflight()
+  } catch (error) {
+    throwPanelError(error, 500)
+  }
+}
 
 export const getPanelUpdatePreflight = createServerFn({ method: 'GET' })
   .middleware(protectedServerFunctionMiddleware)
-  .handler(async () => {
-    try {
-      const checker = (await panelRuntime()).panelUpdateChecker
-      if (!checker) throw new Error('Panel update checker not available')
-      return await checker.preflight()
-    } catch (error) {
-      throwPanelError(error, 500)
+  .handler(getPanelUpdatePreflightImplementation)
+;(getPanelUpdatePreflight as any).__executeImplementation =
+  getPanelUpdatePreflightImplementation
+
+async function getPanelUpdateApplyLogImplementation() {
+  try {
+    const runtime = await panelRuntime()
+    const checker = runtime.panelUpdateChecker
+    if (!checker) throw new Error('Panel update checker not available')
+    const { getDataPaths } =
+      await import('../../../panel-server/utils/paths.ts')
+    return {
+      log: checker.readMostRecentApplyLog(),
+      logPath: `${getDataPaths().logsDir}/panel-update-last.log`,
     }
-  })
+  } catch (error) {
+    throwPanelError(error, 500)
+  }
+}
 
 export const getPanelUpdateApplyLog = createServerFn({ method: 'GET' })
   .middleware(protectedServerFunctionMiddleware)
-  .handler(async () => {
-    try {
-      const runtime = await panelRuntime()
-      const checker = runtime.panelUpdateChecker
-      if (!checker) throw new Error('Panel update checker not available')
-      const { getDataPaths } =
-        await import('../../../panel-server/utils/paths.ts')
-      return {
-        log: checker.readMostRecentApplyLog(),
-        logPath: `${getDataPaths().logsDir}/panel-update-last.log`,
-      }
-    } catch (error) {
-      throwPanelError(error, 500)
-    }
-  })
+  .handler(getPanelUpdateApplyLogImplementation)
+;(getPanelUpdateApplyLog as any).__executeImplementation =
+  getPanelUpdateApplyLogImplementation
 
-export const downloadPanelUpdate = createServerFn({ method: 'POST' })
-  .middleware(adminRoleMiddleware)
-  .validator((data: { confirm?: unknown } | undefined) => data ?? {})
-  .handler(async ({ data }) => {
+async function downloadPanelUpdateImplementation(
+  data: { confirm?: unknown },
+) {
     try {
       const runtime = await panelRuntime()
       const checker = runtime.panelUpdateChecker
@@ -180,11 +195,16 @@ export const downloadPanelUpdate = createServerFn({ method: 'POST' })
     } catch (error) {
       throwPanelError(error, 500)
     }
-  })
+}
 
-export const restartPanel = createServerFn({ method: 'POST' })
+export const downloadPanelUpdate = createServerFn({ method: 'POST' })
   .middleware(adminRoleMiddleware)
-  .handler(async () => {
+  .validator((data: { confirm?: unknown } | undefined) => data ?? {})
+  .handler(({ data }) => downloadPanelUpdateImplementation(data))
+;(downloadPanelUpdate as any).__executeImplementation =
+  downloadPanelUpdateImplementation
+
+async function restartPanelImplementation() {
     const runtime = await panelRuntime()
     const checker = runtime.panelUpdateChecker
     if (!checker) throwPanelError(new Error('Panel update checker not available'), 500)
@@ -318,7 +338,12 @@ export const restartPanel = createServerFn({ method: 'POST' })
     }, 1000)
 
     return { success: true, message: 'Panel is restarting...' }
-  })
+}
+
+export const restartPanel = createServerFn({ method: 'POST' })
+  .middleware(adminRoleMiddleware)
+  .handler(restartPanelImplementation)
+;(restartPanel as any).__executeImplementation = restartPanelImplementation
 
 export function classifyStartupProcessState(
   processState: AnyRecord | null | undefined,

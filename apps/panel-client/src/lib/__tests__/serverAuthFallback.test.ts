@@ -43,4 +43,17 @@ describe('auth status fallback', () => {
     })
     expect(fetchMock).toHaveBeenLastCalledWith('/api/auth/status')
   })
+
+  it('rejects malformed status payloads instead of treating them as auth state', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ needsSetup: false }), { status: 200 }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getAuthStatusWithFallback()).rejects.toThrow(
+      'Auth status response was invalid',
+    )
+  })
 })

@@ -56,6 +56,19 @@ jobs:
       - name: Smoke-test packaged release
         run: node scripts/smoke-release.mjs
 
+      - name: Install Chromium for packaged auth smoke
+        if: runner.os == 'Linux'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Chromium for packaged auth smoke
+        if: runner.os == 'Windows'
+        run: pnpm exec playwright install chromium
+
+      - name: Smoke-test packaged auth persistence
+        env:
+          RUN_AUTH_SMOKE: "1"
+        run: node scripts/smoke-release.mjs
+
       - name: Verify release version parity
         run: node scripts/verify-release-version.mjs "${{ github.ref_name }}"
 

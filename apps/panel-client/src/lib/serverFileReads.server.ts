@@ -109,7 +109,7 @@ function createFileMutation<T>(
           : {},
       )
       .handler(({ data, context }) =>
-        implementation(data, context as FileExecutionContext) as any,
+        implementation(data, context as unknown as FileExecutionContext) as any,
       ),
     { __executeImplementation: implementation },
   )

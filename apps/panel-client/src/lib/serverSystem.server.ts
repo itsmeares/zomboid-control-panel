@@ -2,13 +2,16 @@ import { createServerFn } from '@tanstack/react-start'
 import type { DiskSpaceReport, RuntimeInfo, StorageHealth } from './api'
 import { protectedServerFunctionMiddleware } from './serverAuth.server'
 
+async function getRuntimeInfoImplementation(): Promise<RuntimeInfo> {
+  const { buildRuntimeInfo } =
+    await import('../../../panel-server/utils/runtimeInfo.ts')
+  return buildRuntimeInfo() as RuntimeInfo
+}
+
 export const getRuntimeInfo = createServerFn({ method: 'GET' })
   .middleware(protectedServerFunctionMiddleware)
-  .handler(async () => {
-    const { buildRuntimeInfo } =
-      await import('../../../panel-server/utils/runtimeInfo.ts')
-    return buildRuntimeInfo() as RuntimeInfo
-  })
+  .handler(getRuntimeInfoImplementation)
+;(getRuntimeInfo as any).__executeImplementation = getRuntimeInfoImplementation
 
 async function getDiskSpaceReport(): Promise<DiskSpaceReport> {
   const { getPanelRuntime } =
@@ -20,7 +23,8 @@ async function getDiskSpaceReport(): Promise<DiskSpaceReport> {
 
 export const getDiskSpace = createServerFn({ method: 'GET' })
   .middleware(protectedServerFunctionMiddleware)
-  .handler(async () => getDiskSpaceReport())
+  .handler(getDiskSpaceReport)
+;(getDiskSpace as any).__executeImplementation = getDiskSpaceReport
 
 async function getStorageHealthImplementation(): Promise<StorageHealth> {
   const { getCircuitBreakerStatus } =
