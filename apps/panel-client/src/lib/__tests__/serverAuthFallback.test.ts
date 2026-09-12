@@ -10,7 +10,9 @@ vi.mock('@tanstack/react-start', () => ({
 }))
 
 vi.mock('../serverAuth.server', () => ({
-  getAuthStatus: {},
+  getAuthStatus: {
+    __executeServer: async () => ({ result: undefined, error: undefined }),
+  },
   getOidcStatus: {},
   getRecoveryStatus: {},
   getCurrentUser: {},
@@ -23,7 +25,7 @@ describe('auth status fallback', () => {
     vi.unstubAllGlobals()
   })
 
-  it('uses the public auth endpoint when the Start function is rejected', async () => {
+  it('uses the public auth endpoint when the Start function returns no result', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response('Forbidden', { status: 403 }))
